@@ -1,0 +1,52 @@
+name: Deploy to cPanel via FTP
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build project
+        run: npm run build
+
+      - name: Verify build
+        run: |
+          if [ ! -d "dist" ]; then
+            echo "dist folder missing"
+            exit 1
+          fi
+          if [ ! -f "dist/index.html" ]; then
+            echo "index.html missing"
+            exit 1
+          fi
+          echo "Build OK"
+          du -sh dist
+
+      - name: Deploy via FTP
+        uses: sebastianpopp/ftp-action@releases/v2
+        with:
+          host: ${{ secrets.SERVER }}
+          user: ${{ secrets.FTP_NAME }}
+          password: ${{ secrets.FTP_PASS }}
+          protocol: ftp
+          port: 21
+          localDir: ./dist
+          remoteDir: /
+          dangerous-clean-slate: true
