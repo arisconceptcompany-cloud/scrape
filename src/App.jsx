@@ -12,6 +12,7 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState({ current: 0, total: 0 })
   const [usePuppeteer, setUsePuppeteer] = useState(false)
+  const [deepScan, setDeepScan] = useState(true)
   const [activeTab, setActiveTab] = useState('all')
   const [searchTerm, setSearchTerm] = useState('')
   const [extractions, setExtractions] = useState([])
@@ -96,7 +97,7 @@ function App() {
       const response = await fetch(`${API_URL}/scrape`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls: urlList, usePuppeteer, fileName: importedFileName || 'Saisie manuelle' })
+        body: JSON.stringify({ urls: urlList, usePuppeteer, deepScan, fileName: importedFileName || 'Saisie manuelle' })
       })
 
       const reader = response.body.getReader()
@@ -381,7 +382,11 @@ function App() {
                 <div className="options">
                   <label className="checkbox-label">
                     <input type="checkbox" checked={usePuppeteer} onChange={(e) => setUsePuppeteer(e.target.checked)} />
-                    Mode avancé (plus lent mais plus précis pour les pages dynamiques)
+                    Mode avancé - Plus lent mais plus précis (pages dynamiques)
+                  </label>
+                  <label className="checkbox-label">
+                    <input type="checkbox" checked={deepScan} onChange={(e) => setDeepScan(e.target.checked)} />
+                    Exploration complète - Parcourt tous les menus et sous-pages
                   </label>
                 </div>
                 <div className="button-group">
