@@ -3,7 +3,7 @@ import axios from 'axios'
 import * as XLSX from 'xlsx'
 import './App.css'
 
-const API_URL = 'http://167.86.118.96:3012/api'
+const API_URL = 'https://apiscrape.aris-cc.com/api'
 
 function App() {
   const [view, setView] = useState('extraction')
@@ -159,6 +159,7 @@ function App() {
   const handleImportExcel = async (e) => {
     const file = e.target.files[0]
     if (!file) return
+    // Définir le nom par défaut depuis le fichier, mais modifiable
     setImportedFileName(file.name.replace(/\.[^/.]+$/, ''))
 
     const reader = new FileReader()
