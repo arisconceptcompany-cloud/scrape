@@ -3,10 +3,10 @@ import axios from 'axios'
 import * as XLSX from 'xlsx'
 import './App.css'
 
-const API_URL = 'http://localhost:3001/api'
+const API_URL = 'http://167.86.118.96:3012/api'
 
 function App() {
-  const [view, setView] = useState('scraper')
+  const [view, setView] = useState('extraction')
   const [urls, setUrls] = useState('')
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
@@ -14,28 +14,75 @@ function App() {
   const [usePuppeteer, setUsePuppeteer] = useState(false)
   const [activeTab, setActiveTab] = useState('all')
   const [searchTerm, setSearchTerm] = useState('')
-  const [scrapings, setScrapings] = useState([])
-  const [selectedScraping, setSelectedScraping] = useState(null)
-  const [scrapingResults, setScrapingResults] = useState([])
+  const [extractions, setExtractions] = useState([])
+  const [selectedExtraction, setSelectedExtraction] = useState(null)
+  const [extractionResults, setExtractionResults] = useState([])
   const [importedFileName, setImportedFileName] = useState('')
+  const [loadingHistory, setLoadingHistory] = useState(false)
 
   useEffect(() => {
-    if (view === 'history') fetchScrapings()
+    if (view === 'history') {
+      fetchExtractions()
+    }
   }, [view])
 
-  const fetchScrapings = async () => {
+  // Charger les derniers résultats depuis localStorage au démarrage
+  useEffect(() => {
+    try {
+      const savedData = localStorage.getItem('lastExtraction')
+      if (savedData) {
+        const { results: savedResults, date, fileName } = JSON.parse(savedData)
+        if (savedResults && savedResults.length > 0 && results.length === 0) {
+          setResults(savedResults)
+          if (fileName) setImportedFileName(fileName)
+        }
+      }
+    } catch (e) {
+      console.error('Error loading from localStorage:', e)
+    }
+  }, [])
+
+  // Sauvegarder les résultats dans localStorage à chaque changement
+  useEffect(() => {
+    if (results.length > 0) {
+      const saveData = {
+        results: results,
+        date: new Date().toISOString(),
+        fileName: importedFileName || 'Saisie manuelle'
+      }
+      localStorage.setItem('lastExtraction', JSON.stringify(saveData))
+    }
+  }, [results, importedFileName])
+
+  const fetchExtractions = async () => {
+    setLoadingHistory(true)
     try {
       const res = await axios.get(`${API_URL}/scrapings`)
-      setScrapings(res.data.scrapings)
+      console.log('Extractions response:', res.data)
+      
+      let extractionsData = []
+      if (Array.isArray(res.data)) {
+        extractionsData = res.data
+      } else if (res.data.scrapings && Array.isArray(res.data.scrapings)) {
+        extractionsData = res.data.scrapings
+      } else if (res.data.data && Array.isArray(res.data.data)) {
+        extractionsData = res.data.data
+      }
+      
+      setExtractions(extractionsData)
+      console.log('Extractions set:', extractionsData.length)
     } catch (e) {
-      console.error('Error fetching scrapings:', e)
+      console.error('Error fetching extractions:', e)
+      setExtractions([])
+    } finally {
+      setLoadingHistory(false)
     }
   }
 
   const parseUrls = (text) =>
     text.split(/[\n,;]+/).map(u => u.trim()).filter(u => u.length > 0)
 
-  const handleScrape = async () => {
+  const handleExtract = async () => {
     const urlList = parseUrls(urls)
     if (urlList.length === 0) return
 
@@ -49,7 +96,7 @@ function App() {
       const response = await fetch(`${API_URL}/scrape`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls: urlList, usePuppeteer, fileName: importedFileName || 'Manual Input' })
+        body: JSON.stringify({ urls: urlList, usePuppeteer, fileName: importedFileName || 'Saisie manuelle' })
       })
 
       const reader = response.body.getReader()
@@ -63,17 +110,30 @@ function App() {
         const lines = text.trim().split('\n')
         for (const line of lines) {
           if (line) {
-            const data = JSON.parse(line)
-            if (data.type === 'progress') {
-              allResults.push(data.result)
-              setProgress({ current: data.current, total: data.total })
-              setResults([...allResults])
+            try {
+              const data = JSON.parse(line)
+              if (data.type === 'progress') {
+                allResults.push(data.result)
+                setProgress({ current: data.current, total: data.total })
+                setResults([...allResults])
+              }
+            } catch (e) {
+              console.error('Error parsing line:', e)
             }
           }
         }
       }
+      
+      const saveData = {
+        results: allResults,
+        date: new Date().toISOString(),
+        fileName: importedFileName || 'Saisie manuelle'
+      }
+      localStorage.setItem('lastExtraction', JSON.stringify(saveData))
+      
+      await fetchExtractions()
     } catch (error) {
-      console.error('Scraping error:', error)
+      console.error('Extraction error:', error)
     } finally {
       setLoading(false)
     }
@@ -86,75 +146,105 @@ function App() {
 
     const reader = new FileReader()
     reader.onload = (event) => {
-      const workbook = XLSX.read(event.target.result, { type: 'binary' })
-      const allUrls = []
-      workbook.SheetNames.forEach(sheetName => {
-        const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1 })
-        data.forEach(row => {
-          if (row[0] && typeof row[0] === 'string' && row[0].startsWith('http')) allUrls.push(row[0])
+      try {
+        const workbook = XLSX.read(event.target.result, { type: 'binary' })
+        const allUrls = []
+        workbook.SheetNames.forEach(sheetName => {
+          const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1 })
+          data.forEach(row => {
+            if (row[0] && typeof row[0] === 'string' && row[0].startsWith('http')) allUrls.push(row[0])
+          })
         })
-      })
-      setUrls(allUrls.join('\n'))
+        setUrls(allUrls.join('\n'))
+      } catch (err) {
+        console.error('Error reading Excel file:', err)
+        alert('Erreur lors de la lecture du fichier Excel')
+      }
     }
     reader.readAsBinaryString(file)
   }
 
-  const handleExportExcel = (data, filename = 'scraping-results.xlsx') => {
-    if (data.length === 0) return
-    const exportData = data.map(r => ({
-      URL: r.url,
-      Status: r.status || 'Error',
-      Emails: (r.emails || []).join('; '),
-      WhatsApp: (r.whatsapp || []).join('; '),
-      LinkedIn: (r.linkedin || []).join('; '),
-      Phone: (r.phoneNumbers || []).join('; '),
-      Error: r.error || ''
-    }))
-    const worksheet = XLSX.utils.json_to_sheet(exportData)
-    const workbook = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Results')
-    XLSX.writeFile(workbook, filename)
+  const handleExportExcel = (data, filename = 'extraction-results.xlsx') => {
+    if (data.length === 0) {
+      alert('Aucune donnée à exporter')
+      return
+    }
+    try {
+      const exportData = data.map(r => ({
+        URL: r.url,
+        Status: r.status || 'Error',
+        Emails: (r.emails || []).join('; '),
+        WhatsApp: (r.whatsapp || []).join('; '),
+        LinkedIn: (r.linkedin || []).join('; '),
+        Phone: (r.phoneNumbers || []).join('; '),
+        Error: r.error || ''
+      }))
+      const worksheet = XLSX.utils.json_to_sheet(exportData)
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Results')
+      XLSX.writeFile(workbook, filename)
+    } catch (err) {
+      console.error('Error exporting Excel:', err)
+      alert('Erreur lors de l\'export')
+    }
   }
 
   const handleExportAll = async () => {
     try {
       const res = await axios.get(`${API_URL}/contacts/all`)
-      handleExportExcel(res.data.results, 'all-contacts.xlsx')
+      const data = res.data.results || res.data.data || res.data
+      handleExportExcel(Array.isArray(data) ? data : [], 'all-contacts.xlsx')
     } catch (e) {
       console.error('Error exporting all:', e)
+      alert('Erreur lors de l\'export de tous les contacts')
     }
   }
 
-  const viewScraping = async (id) => {
+  const viewExtraction = async (id) => {
     try {
       const res = await axios.get(`${API_URL}/scrapings/${id}`)
-      setSelectedScraping(res.data.scraping)
-      setScrapingResults(res.data.results)
-      setView('scraping-detail')
+      console.log('Extraction detail response:', res.data)
+      
+      const extraction = res.data.scraping || res.data.data || res.data
+      const results = res.data.results || res.data.contacts || []
+      
+      setSelectedExtraction(extraction)
+      setExtractionResults(Array.isArray(results) ? results : [])
+      setView('extraction-detail')
       setActiveTab('all')
       setSearchTerm('')
     } catch (e) {
-      console.error('Error fetching scraping:', e)
+      console.error('Error fetching extraction:', e)
+      alert('Erreur lors du chargement de l\'extraction')
     }
   }
 
-  const deleteScraping = async (id) => {
-    if (!confirm('Supprimer ce scraping et tous ses résultats ?')) return
+  const deleteExtraction = async (id) => {
+    if (!confirm('Supprimer cette extraction et tous ses résultats ?')) return
     try {
       await axios.delete(`${API_URL}/scrapings/${id}`)
-      if (selectedScraping?.id === id) { setSelectedScraping(null); setScrapingResults([]) }
-      fetchScrapings()
-    } catch (e) { console.error(e) }
+      if (selectedExtraction?.id === id) { 
+        setSelectedExtraction(null)
+        setExtractionResults([]) 
+      }
+      await fetchExtractions()
+    } catch (e) { 
+      console.error('Error deleting extraction:', e)
+      alert('Erreur lors de la suppression')
+    }
   }
 
-  const deleteAllScrapings = async () => {
-    if (!confirm('Supprimer TOUS les scrapings et résultats ?')) return
+  const deleteAllExtractions = async () => {
+    if (!confirm('Supprimer TOUTES les extractions et résultats ?')) return
     try {
       await axios.delete(`${API_URL}/scrapings`)
-      setSelectedScraping(null)
-      setScrapingResults([])
-      fetchScrapings()
-    } catch (e) { console.error(e) }
+      setSelectedExtraction(null)
+      setExtractionResults([])
+      await fetchExtractions()
+    } catch (e) { 
+      console.error('Error deleting all extractions:', e)
+      alert('Erreur lors de la suppression')
+    }
   }
 
   const filterData = useCallback((data) => {
@@ -176,7 +266,7 @@ function App() {
     errors: data.filter(r => r.error).length
   })
 
-  const currentData = view === 'scraping-detail' ? scrapingResults : results
+  const currentData = view === 'extraction-detail' ? extractionResults : results
   const filteredData = filterData(currentData)
   const stats = computeStats(currentData)
 
@@ -187,24 +277,24 @@ function App() {
     return (
       <>
         <div className="stats">
-          <div className="stat-card"><span className="stat-value">{s.total}</span><span className="stat-label">Sites Scraped</span></div>
-          <div className="stat-card stat-email"><span className="stat-value">{s.emails}</span><span className="stat-label">Emails Found</span></div>
-          <div className="stat-card stat-whatsapp"><span className="stat-value">{s.whatsapp}</span><span className="stat-label">WhatsApp Found</span></div>
-          <div className="stat-card stat-linkedin"><span className="stat-value">{s.linkedin}</span><span className="stat-label">LinkedIn Found</span></div>
-          <div className="stat-card stat-error"><span className="stat-value">{s.errors}</span><span className="stat-label">Errors</span></div>
+          <div className="stat-card"><span className="stat-value">{s.total}</span><span className="stat-label">Sites traités</span></div>
+          <div className="stat-card stat-email"><span className="stat-value">{s.emails}</span><span className="stat-label">Emails trouvés</span></div>
+          <div className="stat-card stat-whatsapp"><span className="stat-value">{s.whatsapp}</span><span className="stat-label">WhatsApp trouvés</span></div>
+          <div className="stat-card stat-linkedin"><span className="stat-value">{s.linkedin}</span><span className="stat-label">LinkedIn trouvés</span></div>
+          <div className="stat-card stat-error"><span className="stat-value">{s.errors}</span><span className="stat-label">Erreurs</span></div>
         </div>
 
         <div className="results-header">
           <div className="tabs">
-            <button className={activeTab === 'all' ? 'active' : ''} onClick={() => setActiveTab('all')}>All ({data.length})</button>
+            <button className={activeTab === 'all' ? 'active' : ''} onClick={() => setActiveTab('all')}>Tout ({data.length})</button>
             <button className={activeTab === 'email' ? 'active' : ''} onClick={() => setActiveTab('email')}>Emails ({data.filter(r => r.emails?.length > 0).length})</button>
             <button className={activeTab === 'whatsapp' ? 'active' : ''} onClick={() => setActiveTab('whatsapp')}>WhatsApp ({data.filter(r => r.whatsapp?.length > 0).length})</button>
             <button className={activeTab === 'linkedin' ? 'active' : ''} onClick={() => setActiveTab('linkedin')}>LinkedIn ({data.filter(r => r.linkedin?.length > 0).length})</button>
-            <button className={activeTab === 'error' ? 'active' : ''} onClick={() => setActiveTab('error')}>Errors ({s.errors})</button>
+            <button className={activeTab === 'error' ? 'active' : ''} onClick={() => setActiveTab('error')}>Erreurs ({s.errors})</button>
           </div>
           <div className="results-actions">
-            <input type="text" placeholder="Search URLs..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="search-input" />
-            <button className="btn btn-secondary" onClick={() => onExport(filtered)}>Export Excel</button>
+            <input type="text" placeholder="Rechercher des URLs..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="search-input" />
+            <button className="btn btn-secondary" onClick={() => onExport(filtered)}>Exporter Excel</button>
           </div>
         </div>
 
@@ -214,31 +304,36 @@ function App() {
               <tr>
                 <th>#</th>
                 <th>URL</th>
-                <th>Status</th>
+                <th>Statut</th>
                 <th>Emails</th>
                 <th>WhatsApp</th>
                 <th>LinkedIn</th>
-                <th>Phone</th>
-                <th>Error</th>
+                <th>Téléphone</th>
+                <th>Erreur</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((r, i) => (
-                <tr key={i} className={r.error ? 'row-error' : ''}>
-                  <td>{i + 1}</td>
-                  <td><a href={r.url} target="_blank" rel="noopener noreferrer" className="table-url" title={r.url}>{r.url.length > 40 ? r.url.substring(0, 40) + '...' : r.url}</a></td>
-                  <td><span className={`status-badge ${r.status === 200 ? 'success' : r.error ? 'error' : 'warning'}`}>{r.status || 'Err'}</span></td>
-                   <td className="cell-values">{r.emails?.length > 0 ? r.emails.map((e, j) => <div key={j}><a href={`mailto:${e}`} className="inline-link">{e}</a></div>) : '-'}</td>
-                   <td className="cell-values">{r.whatsapp?.length > 0 ? r.whatsapp.map((w, j) => <div key={j}><a href={`https://wa.me/${w.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="inline-link">{w}</a></div>) : '-'}</td>
-                   <td className="cell-values">{r.linkedin?.length > 0 ? r.linkedin.map((l, j) => <div key={j}><a href={l} target="_blank" rel="noopener noreferrer" className="inline-link">{l.length > 40 ? l.substring(0, 40) + '...' : l}</a></div>) : '-'}</td>
-                   <td className="cell-values">{r.phoneNumbers?.length > 0 ? r.phoneNumbers.map((p, j) => <div key={j}><a href={`tel:${p}`} className="inline-link">{p}</a></div>) : '-'}</td>
-                  <td className="error-cell">{r.error ? r.error.substring(0, 30) + '...' : '-'}</td>
+              {filtered.length > 0 ? (
+                filtered.map((r, i) => (
+                  <tr key={i} className={r.error ? 'row-error' : ''}>
+                    <td>{i + 1}</td>
+                    <td><a href={r.url} target="_blank" rel="noopener noreferrer" className="table-url" title={r.url}>{r.url.length > 40 ? r.url.substring(0, 40) + '...' : r.url}</a></td>
+                    <td><span className={`status-badge ${r.status === 200 ? 'success' : r.error ? 'error' : 'warning'}`}>{r.status || 'Err'}</span></td>
+                    <td className="cell-values">{r.emails?.length > 0 ? r.emails.map((e, j) => <div key={j}><a href={`mailto:${e}`} className="inline-link">{e}</a></div>) : '-'}</td>
+                    <td className="cell-values">{r.whatsapp?.length > 0 ? r.whatsapp.map((w, j) => <div key={j}><a href={`https://wa.me/${w.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="inline-link">{w}</a></div>) : '-'}</td>
+                    <td className="cell-values">{r.linkedin?.length > 0 ? r.linkedin.map((l, j) => <div key={j}><a href={l} target="_blank" rel="noopener noreferrer" className="inline-link">{l.length > 40 ? l.substring(0, 40) + '...' : l}</a></div>) : '-'}</td>
+                    <td className="cell-values">{r.phoneNumbers?.length > 0 ? r.phoneNumbers.map((p, j) => <div key={j}><a href={`tel:${p}`} className="inline-link">{p}</a></div>) : '-'}</td>
+                    <td className="error-cell">{r.error ? r.error.substring(0, 30) + '...' : '-'}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="8" style={{ textAlign: 'center', padding: '20px', color: '#999' }}>Aucune donnée trouvée</td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>
-
       </>
     )
   }
@@ -246,41 +341,76 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1>Web Scraper - Contacts</h1>
-        <p>Extract emails, WhatsApp numbers, and LinkedIn profiles</p>
+        <div className="header-content">
+          <div className="header-text">
+            <h1>Extracteur de Contacts</h1>
+            <p>Extrait les emails, numéros WhatsApp et profils LinkedIn de sites web</p>
+          </div>
+        </div>
         <nav className="nav-tabs">
-          <button className={view === 'scraper' ? 'active' : ''} onClick={() => { setView('scraper'); setSelectedScraping(null); }}>Scraper</button>
-          <button className={view === 'history' ? 'active' : ''} onClick={() => setView('history')}>Historique ({scrapings.length})</button>
-          <button className="btn-export-all" onClick={handleExportAll}>Exporter Tout</button>
+          <button className={view === 'extraction' ? 'active' : ''} onClick={() => { setView('extraction'); setSelectedExtraction(null); }}>Nouvelle extraction</button>
+          <button className={view === 'history' ? 'active' : ''} onClick={() => setView('history')}>
+            Historique {extractions.length > 0 && `(${extractions.length})`}
+          </button>
+          <button className="btn-export-all" onClick={handleExportAll}>Exporter tout</button>
         </nav>
       </header>
 
       <main className="main">
-        {view === 'scraper' && !selectedScraping && (
+        {view === 'extraction' && !selectedExtraction && (
           <>
             <section className="input-section">
               <div className="card">
-                <h2>Input URLs</h2>
+                <h2>Saisir les URLs</h2>
                 <div className="import-area">
                   <label className="file-upload">
                     <input type="file" accept=".xlsx,.xls,.csv" onChange={handleImportExcel} />
-                    Import Excel File
+                    Importer un fichier Excel
                   </label>
                   <span className="import-hint">
-                    Supports: .xlsx, .xls, .csv
+                    Formats supportés: .xlsx, .xls, .csv
                     {importedFileName && <span className="file-name"> • {importedFileName}</span>}
                   </span>
                 </div>
-                <textarea value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="Enter URLs (one per line or separated by commas)&#10;&#10;Example:&#10;https://example.com&#10;https://example2.com/contact" rows={10} />
+                <textarea 
+                  value={urls} 
+                  onChange={(e) => setUrls(e.target.value)} 
+                  placeholder="Entrez les URLs (une par ligne ou séparées par des virgules)&#10;&#10;Exemple:&#10;https://exemple.com&#10;https://exemple2.com/contact" 
+                  rows={10} 
+                />
                 <div className="options">
                   <label className="checkbox-label">
                     <input type="checkbox" checked={usePuppeteer} onChange={(e) => setUsePuppeteer(e.target.checked)} />
-                    Use Puppeteer (slower but more accurate for JS-rendered pages)
+                    Mode avancé (plus lent mais plus précis pour les pages dynamiques)
                   </label>
                 </div>
-                <button className="btn btn-primary" onClick={handleScrape} disabled={loading || parseUrls(urls).length === 0}>
-                  {loading ? `Scraping... (${progress.current}/${progress.total})` : 'Start Scraping'}
-                </button>
+                <div className="button-group">
+                  <button 
+                    className="btn btn-primary" 
+                    onClick={handleExtract} 
+                    disabled={loading || parseUrls(urls).length === 0}
+                  >
+                    {loading ? `Extraction en cours... (${progress.current}/${progress.total})` : 'Lancer l\'extraction'}
+                  </button>
+                  {localStorage.getItem('lastExtraction') && (
+                    <button 
+                      className="btn btn-secondary" 
+                      onClick={() => {
+                        try {
+                          const savedData = JSON.parse(localStorage.getItem('lastExtraction'))
+                          if (savedData.results && savedData.results.length > 0) {
+                            setResults(savedData.results)
+                            setView('extraction')
+                          }
+                        } catch (e) {
+                          console.error('Error loading saved results:', e)
+                        }
+                      }}
+                    >
+                      Voir derniers résultats
+                    </button>
+                  )}
+                </div>
               </div>
 
               {loading && (
@@ -293,7 +423,7 @@ function App() {
 
             {results.length > 0 && (
               <section className="results-section">
-                <DataTable data={results} onExport={(d) => handleExportExcel(d, 'scraping-results.xlsx')} />
+                <DataTable data={results} onExport={(d) => handleExportExcel(d, 'extraction-results.xlsx')} />
               </section>
             )}
           </>
@@ -302,33 +432,43 @@ function App() {
         {view === 'history' && (
           <section className="history-section">
             <div className="history-header">
-              <h2>Historique des Scrapings</h2>
-              {scrapings.length > 0 && <button className="btn btn-danger" onClick={deleteAllScrapings}>Supprimer Tout</button>}
+              <h2>Historique des extractions</h2>
+              {extractions.length > 0 && <button className="btn btn-danger" onClick={deleteAllExtractions}>Tout supprimer</button>}
             </div>
 
-            {scrapings.length === 0 ? (
+            {loadingHistory ? (
               <div className="empty-state">
-                <p>Aucun scraping enregistré pour le moment.</p>
-                <button className="btn btn-primary" onClick={() => setView('scraper')}>Commencer un scraping</button>
+                <p>Chargement des extractions...</p>
+              </div>
+            ) : extractions.length === 0 ? (
+              <div className="empty-state">
+                <p>Aucune extraction enregistrée pour le moment.</p>
+                <button className="btn btn-primary" onClick={() => setView('extraction')}>Commencer une extraction</button>
               </div>
             ) : (
               <div className="history-list">
-                {scrapings.map(s => (
-                  <div key={s.id} className="history-card" onClick={() => viewScraping(s.id)}>
+                {extractions.map(s => (
+                  <div key={s.id} className="history-card" onClick={() => viewExtraction(s.id)}>
                     <div className="history-info">
-                      <h3>{s.file_name}</h3>
+                      <h3>{s.file_name || s.fileName || 'Sans titre'}</h3>
                       <span className="history-date">
-                        {new Date(s.created_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        {new Date(s.created_at || s.createdAt).toLocaleDateString('fr-FR', { 
+                          day: '2-digit', 
+                          month: 'long', 
+                          year: 'numeric', 
+                          hour: '2-digit', 
+                          minute: '2-digit' 
+                        })}
                       </span>
                     </div>
                     <div className="history-stats">
-                      <span className="history-stat">{s.total_urls} sites</span>
-                      <span className="history-stat stat-email">{s.total_emails} emails</span>
-                      <span className="history-stat stat-whatsapp">{s.total_whatsapp} whatsapp</span>
-                      <span className="history-stat stat-linkedin">{s.total_linkedin} linkedin</span>
-                      {s.total_errors > 0 && <span className="history-stat stat-error">{s.total_errors} erreurs</span>}
+                      <span className="history-stat">{s.total_urls || s.totalUrls || 0} sites</span>
+                      <span className="history-stat stat-email">{s.total_emails || s.totalEmails || 0} emails</span>
+                      <span className="history-stat stat-whatsapp">{s.total_whatsapp || s.totalWhatsapp || 0} whatsapp</span>
+                      <span className="history-stat stat-linkedin">{s.total_linkedin || s.totalLinkedin || 0} linkedin</span>
+                      {(s.total_errors || s.totalErrors || 0) > 0 && <span className="history-stat stat-error">{s.total_errors || s.totalErrors} erreurs</span>}
                     </div>
-                    <button className="btn-delete" onClick={(e) => { e.stopPropagation(); deleteScraping(s.id); }}>✕</button>
+                    <button className="btn-delete" onClick={(e) => { e.stopPropagation(); deleteExtraction(s.id); }}>✕</button>
                   </div>
                 ))}
               </div>
@@ -336,18 +476,24 @@ function App() {
           </section>
         )}
 
-        {view === 'scraping-detail' && selectedScraping && (
+        {view === 'extraction-detail' && selectedExtraction && (
           <section className="results-section">
             <div className="detail-header">
               <button className="btn btn-back" onClick={() => setView('history')}>← Retour à l'historique</button>
               <div>
-                <h2>{selectedScraping.file_name}</h2>
+                <h2>{selectedExtraction.file_name || selectedExtraction.fileName || 'Sans titre'}</h2>
                 <span className="detail-date">
-                  {new Date(selectedScraping.created_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  {new Date(selectedExtraction.created_at || selectedExtraction.createdAt).toLocaleDateString('fr-FR', { 
+                    day: '2-digit', 
+                    month: 'long', 
+                    year: 'numeric', 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                  })}
                 </span>
               </div>
             </div>
-            <DataTable data={scrapingResults} onExport={(d) => handleExportExcel(d, `${selectedScraping.file_name}-results.xlsx`)} />
+            <DataTable data={extractionResults} onExport={(d) => handleExportExcel(d, `${selectedExtraction.file_name || selectedExtraction.fileName || 'results'}-results.xlsx`)} />
           </section>
         )}
       </main>
