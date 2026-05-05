@@ -13,6 +13,7 @@ function App() {
   const [progress, setProgress] = useState({ current: 0, total: 0 })
   const [usePuppeteer, setUsePuppeteer] = useState(false)
   const [deepScan, setDeepScan] = useState(true)
+  const [currentSessionId, setCurrentSessionId] = useState(null)
   const [activeTab, setActiveTab] = useState('all')
   const [searchTerm, setSearchTerm] = useState('')
   const [extractions, setExtractions] = useState([])
@@ -113,7 +114,9 @@ function App() {
           if (line) {
             try {
               const data = JSON.parse(line)
-              if (data.type === 'progress') {
+              if (data.type === 'session') {
+                setCurrentSessionId(data.sessionId)
+              } else if (data.type === 'progress') {
                 allResults.push(data.result)
                 setProgress({ current: data.current, total: data.total })
                 setResults([...allResults])
@@ -137,6 +140,19 @@ function App() {
       console.error('Extraction error:', error)
     } finally {
       setLoading(false)
+      setCurrentSessionId(null)
+    }
+  }
+
+  const handleStop = async () => {
+    if (!currentSessionId) return
+    try {
+      await fetch(`${API_URL}/scrape/${currentSessionId}/stop`, {
+        method: 'POST'
+      })
+      console.log('Demande d\'arrêt envoyée')
+    } catch (error) {
+      console.error('Erreur lors de l\'arrêt:', error)
     }
   }
 
@@ -373,6 +389,17 @@ function App() {
                     {importedFileName && <span className="file-name"> • {importedFileName}</span>}
                   </span>
                 </div>
+                <div className="name-input">
+                  <label>Nom de l'extraction :</label>
+                  <input 
+                    type="text" 
+                    value={importedFileName} 
+                    onChange={(e) => setImportedFileName(e.target.value)}
+                    placeholder="Ex: Clients Paris, Site officiel..."
+                    className="name-field"
+                  />
+                </div>
+
                 <textarea 
                   value={urls} 
                   onChange={(e) => setUrls(e.target.value)} 
@@ -397,7 +424,15 @@ function App() {
                   >
                     {loading ? `Extraction en cours... (${progress.current}/${progress.total})` : 'Lancer l\'extraction'}
                   </button>
-                  {localStorage.getItem('lastExtraction') && (
+                  {loading && (
+                    <button 
+                      className="btn btn-danger" 
+                      onClick={handleStop}
+                    >
+                      Arrêter l'extraction
+                    </button>
+                  )}
+                  {localStorage.getItem('lastExtraction') && !loading && (
                     <button 
                       className="btn btn-secondary" 
                       onClick={() => {
