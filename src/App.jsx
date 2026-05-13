@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import axios from 'axios'
 import * as XLSX from 'xlsx'
 import './App.css'
@@ -23,6 +23,7 @@ function App() {
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [remainingUrls, setRemainingUrls] = useState([])
   const [allUrlList, setAllUrlList] = useState([])
+  const abortRef = useRef(null)
 
   useEffect(() => {
     if (view === 'history') {
@@ -100,88 +101,66 @@ function App() {
     setActiveTab('all')
     setSearchTerm('')
 
+    const controller = new AbortController()
+    abortRef.current = controller
+
     try {
       const response = await fetch(`${API_URL}/scrape`, {
         method: 'POST',
+        signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ urls: urlList, usePuppeteer, deepScan, fileName: importedFileName || 'Saisie manuelle' })
       })
 
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      const newResults = []
-      let buffer = ''
+      const data = await response.json()
+      abortRef.current = null
+      const newResults = data.results || []
+      if (data.sessionId) setCurrentSessionId(data.sessionId)
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
+      setResults(prev => {
+        const combined = append ? [...prev, ...newResults] : newResults
+        localStorage.setItem('lastExtraction', JSON.stringify({
+          results: combined,
+          date: new Date().toISOString(),
+          fileName: importedFileName || 'Saisie manuelle'
+        }))
+        return combined
+      })
 
-        const lines = buffer.split('\n')
-        buffer = lines.pop()
-
-        for (const line of lines) {
-          if (!line) continue
-          try {
-            const data = JSON.parse(line)
-            if (data.type === 'session') {
-              setCurrentSessionId(data.sessionId)
-            } else if (data.type === 'progress') {
-              newResults.push(data.result)
-              setProgress({ current: data.current, total: data.total })
-              const remaining = urlList.slice(data.current)
-              setRemainingUrls(remaining)
-              setResults(prev => append ? [...prev, ...newResults] : [...newResults])
-            }
-          } catch (e) {
-            console.error('Error parsing line:', e)
-          }
-        }
-      }
-
-      if (buffer.trim()) {
-        try {
-          const data = JSON.parse(buffer)
-          if (data.type === 'progress') {
-            newResults.push(data.result)
-            setResults(prev => append ? [...prev, ...newResults] : [...newResults])
-          }
-        } catch (e) {
-          console.error('Error parsing final buffer:', e)
-        }
-      }
-
+      setProgress({ current: newResults.length, total: newResults.length })
       setRemainingUrls([])
-
-      const allResults = append ? [...results, ...newResults] : newResults
-      const saveData = {
-        results: allResults,
-        date: new Date().toISOString(),
-        fileName: importedFileName || 'Saisie manuelle'
-      }
-      localStorage.setItem('lastExtraction', JSON.stringify(saveData))
 
       await fetchExtractions()
     } catch (error) {
-      console.error('Extraction error:', error)
+      if (error.name === 'AbortError') {
+        console.log('Extraction annulée')
+      } else {
+        console.error('Extraction error:', error)
+      }
     } finally {
       setLoading(false)
       setCurrentSessionId(null)
+      abortRef.current = null
     }
   }
 
   const handleStop = async () => {
-    if (!currentSessionId) return
-    try {
-      await fetch(`${API_URL}/scrape/${currentSessionId}/stop`, {
-        method: 'POST'
-      })
-      setLoading(false)
-      setCurrentSessionId(null)
-      console.log('Extraction arrêtée')
-    } catch (error) {
-      console.error('Erreur lors de l\'arrêt:', error)
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
     }
+    if (currentSessionId) {
+      try {
+        await fetch(`${API_URL}/scrape/${currentSessionId}/stop`, {
+          method: 'POST'
+        })
+      } catch (error) {
+        console.error('Erreur lors de l\'arrêt:', error)
+      }
+    }
+    setLoading(false)
+    setCurrentSessionId(null)
+    console.log('Extraction arrêtée')
   }
 
   const handleImportExcel = async (e) => {
