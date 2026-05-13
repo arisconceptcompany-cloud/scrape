@@ -112,13 +112,52 @@ function App() {
         body: JSON.stringify({ urls: urlList, usePuppeteer, deepScan, fileName: importedFileName || 'Saisie manuelle' })
       })
 
-      const data = await response.json()
-      abortRef.current = null
-      const newResults = data.results || []
-      if (data.sessionId) setCurrentSessionId(data.sessionId)
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      const newResults = []
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+
+        for (const line of lines) {
+          if (!line) continue
+          try {
+            const data = JSON.parse(line)
+            if (data.type === 'progress') {
+              newResults.push(data.result)
+              setProgress({ current: data.current, total: data.total })
+              const remaining = urlList.slice(data.current)
+              setRemainingUrls(remaining)
+              setResults(prev => append ? [...prev, ...newResults] : [...newResults])
+            }
+          } catch (e) {
+            console.error('Error parsing line:', e)
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        try {
+          const data = JSON.parse(buffer)
+          if (data.type === 'progress') {
+            newResults.push(data.result)
+            setResults(prev => append ? [...prev, ...newResults] : [...newResults])
+          }
+        } catch (e) {
+          console.error('Error parsing final buffer:', e)
+        }
+      }
+
+      setRemainingUrls([])
 
       setResults(prev => {
-        const combined = append ? [...prev, ...newResults] : newResults
+        const combined = append ? [...prev] : newResults
         localStorage.setItem('lastExtraction', JSON.stringify({
           results: combined,
           date: new Date().toISOString(),
@@ -126,9 +165,6 @@ function App() {
         }))
         return combined
       })
-
-      setProgress({ current: newResults.length, total: newResults.length })
-      setRemainingUrls([])
 
       await fetchExtractions()
     } catch (error) {
