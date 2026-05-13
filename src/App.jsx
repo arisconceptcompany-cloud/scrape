@@ -21,6 +21,8 @@ function App() {
   const [extractionResults, setExtractionResults] = useState([])
   const [importedFileName, setImportedFileName] = useState('')
   const [loadingHistory, setLoadingHistory] = useState(false)
+  const [remainingUrls, setRemainingUrls] = useState([])
+  const [allUrlList, setAllUrlList] = useState([])
 
   useEffect(() => {
     if (view === 'history') {
@@ -84,13 +86,17 @@ function App() {
   const parseUrls = (text) =>
     text.split(/[\n,;]+/).map(u => u.trim()).filter(u => u.length > 0)
 
-  const handleExtract = async () => {
-    const urlList = parseUrls(urls)
+  const handleExtract = async (urlsToExtract, append = false) => {
+    const urlList = urlsToExtract || parseUrls(urls)
     if (urlList.length === 0) return
 
     setLoading(true)
     setProgress({ current: 0, total: urlList.length })
-    setResults([])
+    if (!append) {
+      setResults([])
+      setAllUrlList(urlList)
+    }
+    setRemainingUrls([])
     setActiveTab('all')
     setSearchTerm('')
 
@@ -103,38 +109,58 @@ function App() {
 
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
-      const allResults = []
+      const newResults = []
+      let buffer = ''
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        const text = decoder.decode(value)
-        const lines = text.trim().split('\n')
+        buffer += decoder.decode(value, { stream: true })
+
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+
         for (const line of lines) {
-          if (line) {
-            try {
-              const data = JSON.parse(line)
-              if (data.type === 'session') {
-                setCurrentSessionId(data.sessionId)
-              } else if (data.type === 'progress') {
-                allResults.push(data.result)
-                setProgress({ current: data.current, total: data.total })
-                setResults([...allResults])
-              }
-            } catch (e) {
-              console.error('Error parsing line:', e)
+          if (!line) continue
+          try {
+            const data = JSON.parse(line)
+            if (data.type === 'session') {
+              setCurrentSessionId(data.sessionId)
+            } else if (data.type === 'progress') {
+              newResults.push(data.result)
+              setProgress({ current: data.current, total: data.total })
+              const remaining = urlList.slice(data.current)
+              setRemainingUrls(remaining)
+              setResults(prev => append ? [...prev, ...newResults] : [...newResults])
             }
+          } catch (e) {
+            console.error('Error parsing line:', e)
           }
         }
       }
-      
+
+      if (buffer.trim()) {
+        try {
+          const data = JSON.parse(buffer)
+          if (data.type === 'progress') {
+            newResults.push(data.result)
+            setResults(prev => append ? [...prev, ...newResults] : [...newResults])
+          }
+        } catch (e) {
+          console.error('Error parsing final buffer:', e)
+        }
+      }
+
+      setRemainingUrls([])
+
+      const allResults = append ? [...results, ...newResults] : newResults
       const saveData = {
         results: allResults,
         date: new Date().toISOString(),
         fileName: importedFileName || 'Saisie manuelle'
       }
       localStorage.setItem('lastExtraction', JSON.stringify(saveData))
-      
+
       await fetchExtractions()
     } catch (error) {
       console.error('Extraction error:', error)
@@ -150,7 +176,9 @@ function App() {
       await fetch(`${API_URL}/scrape/${currentSessionId}/stop`, {
         method: 'POST'
       })
-      console.log('Demande d\'arrêt envoyée')
+      setLoading(false)
+      setCurrentSessionId(null)
+      console.log('Extraction arrêtée')
     } catch (error) {
       console.error('Erreur lors de l\'arrêt:', error)
     }
@@ -418,52 +446,83 @@ function App() {
                   </label>
                 </div>
                 <div className="button-group">
-                  <button 
-                    className="btn btn-primary" 
-                    onClick={handleExtract} 
-                    disabled={loading || parseUrls(urls).length === 0}
-                  >
-                    {loading ? `Extraction en cours... (${progress.current}/${progress.total})` : 'Lancer l\'extraction'}
-                  </button>
-                  {loading && (
-                    <button 
-                      className="btn btn-danger" 
-                      onClick={handleStop}
-                    >
-                      Arrêter l'extraction
-                    </button>
-                  )}
-                  {localStorage.getItem('lastExtraction') && !loading && (
-                    <button 
-                      className="btn btn-secondary" 
-                      onClick={() => {
-                        try {
-                          const savedData = JSON.parse(localStorage.getItem('lastExtraction'))
-                          if (savedData.results && savedData.results.length > 0) {
-                            setResults(savedData.results)
-                            setView('extraction')
-                          }
-                        } catch (e) {
-                          console.error('Error loading saved results:', e)
-                        }
-                      }}
-                    >
-                      Voir derniers résultats
-                    </button>
+                  {loading ? (
+                    <>
+                      <div className="btn btn-loading">
+                        <span className="spinner" />
+                        Extraction en cours... ({progress.current}/{progress.total})
+                      </div>
+                      <button className="btn btn-danger" onClick={handleStop}>
+                        Arrêter
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button 
+                        className="btn btn-primary" 
+                        onClick={() => handleExtract(parseUrls(urls), false)} 
+                        disabled={parseUrls(urls).length === 0}
+                      >
+                        Lancer l'extraction
+                      </button>
+                      {remainingUrls.length > 0 && (
+                        <button 
+                          className="btn btn-resume" 
+                          onClick={() => handleExtract(remainingUrls, true)}
+                        >
+                          Reprendre ({remainingUrls.length} restantes)
+                        </button>
+                      )}
+                      {localStorage.getItem('lastExtraction') && (
+                        <button 
+                          className="btn btn-secondary" 
+                          onClick={() => {
+                            try {
+                              const savedData = JSON.parse(localStorage.getItem('lastExtraction'))
+                              if (savedData.results && savedData.results.length > 0) {
+                                setResults(savedData.results)
+                                setView('extraction')
+                              }
+                            } catch (e) {
+                              console.error('Error loading saved results:', e)
+                            }
+                          }}
+                        >
+                          Derniers résultats
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
 
               {loading && (
-                <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: `${(progress.current / progress.total) * 100}%` }} />
-                  <span>{Math.round((progress.current / progress.total) * 100)}%</span>
+                <div className="progress-section">
+                  <div className="progress-header">
+                    <span className="progress-label">Progression</span>
+                    <span className="progress-count">{progress.current}/{progress.total}</span>
+                  </div>
+                  <div className="progress-track">
+                    <div className="progress-fill" style={{ width: `${(progress.current / progress.total) * 100}%` }} />
+                    <div className="progress-glow" style={{ width: `${(progress.current / progress.total) * 100}%` }} />
+                  </div>
                 </div>
               )}
             </section>
 
             {results.length > 0 && (
               <section className="results-section">
+                {remainingUrls.length > 0 && !loading && (
+                  <div className="resume-banner">
+                    <div className="resume-banner-icon">⏸</div>
+                    <div className="resume-banner-text">
+                      <strong>Extraction interrompue</strong> — {remainingUrls.length} URL{remainingUrls.length > 1 ? 's' : ''} non traitée{remainingUrls.length > 1 ? 's' : ''}
+                    </div>
+                    <button className="btn btn-resume" onClick={() => handleExtract(remainingUrls, true)}>
+                      Reprendre
+                    </button>
+                  </div>
+                )}
                 <DataTable data={results} onExport={(d) => handleExportExcel(d, 'extraction-results.xlsx')} />
               </section>
             )}
